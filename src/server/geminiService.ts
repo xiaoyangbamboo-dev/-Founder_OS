@@ -6,8 +6,8 @@ import type {
   ResumeBrief,
   SubmissionPayload,
   WorkThread,
-} from '../types/founderOs';
-import type { SemanticCheckerAssessment } from '../core/firewall';
+} from '../types/founderOs.ts';
+import type { SemanticCheckerAssessment } from '../core/firewall.ts';
 
 function getClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;

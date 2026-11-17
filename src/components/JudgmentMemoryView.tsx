@@ -1,11 +1,5 @@
 import { useState } from 'react';
-import {
-  AlertTriangle,
-  CheckCircle2,
-  RotateCcw,
-  Shield,
-  Sparkles,
-} from 'lucide-react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import type {
   AutoAppliedAction,
   DecisionRecord,
@@ -13,6 +7,7 @@ import type {
   Project,
   RuleConflict,
 } from '../types/founderOs';
+import { formatRelativeTime } from '../core/formatters';
 
 interface CompiledDraft {
   title: string;
@@ -48,6 +43,7 @@ interface JudgmentMemoryViewProps {
     deactivateConflictingRuleIds?: string[];
   }) => Promise<void>;
   onToggleRuleActive: (ruleId: string, active: boolean) => Promise<void>;
+  onAckRuleReview: (ruleId: string, stillWorks: boolean) => Promise<void>;
   onChangeHabitMode: (
     ruleId: string,
     mode: 'suggest_only' | 'auto_apply_reversible'
@@ -60,6 +56,9 @@ interface JudgmentMemoryViewProps {
   ) => Promise<void>;
 }
 
+/**
+ * Section 6: 规矩页 (Single column max-w 960, left-aligned, flat hairline sections).
+ */
 export function JudgmentMemoryView({
   projects,
   selectedProjectId,
@@ -69,6 +68,7 @@ export function JudgmentMemoryView({
   onCompileRule,
   onSaveCompiledRule,
   onToggleRuleActive,
+  onAckRuleReview,
   onChangeHabitMode,
   onUndoAutoAction,
   onSubmitOutcome,
@@ -83,61 +83,17 @@ export function JudgmentMemoryView({
     compiled: CompiledDraft;
     conflicts: RuleConflict[];
   } | null>(null);
-  const [replaceConflicting, setReplaceConflicting] = useState(false);
+  const [techDetailsOpen, setTechDetailsOpen] = useState(false);
+  const [conflictChoice, setConflictChoice] = useState<'replace' | 'keep_old'>('replace');
   const [savingRule, setSavingRule] = useState(false);
 
+  const [selectedOutcomeVerdict, setSelectedOutcomeVerdict] = useState<
+    Record<string, 'win' | 'miss' | 'neutral'>
+  >({});
   const [outcomeNotes, setOutcomeNotes] = useState<Record<string, string>>({});
+  const [highlightedDecisionId, setHighlightedDecisionId] = useState<string | null>(null);
 
-  async function handleCompile(e: React.FormEvent) {
-    e.preventDefault();
-    if (!naturalText.trim()) return;
-    setCompileError(null);
-    setCompiling(true);
-    try {
-      const res = await onCompileRule(naturalText.trim(), scopeProjectId);
-      setDraftResult(res);
-      setReplaceConflicting(false);
-    } catch (err: unknown) {
-      setCompileError((err as Error).message);
-    } finally {
-      setCompiling(false);
-    }
-  }
-
-  async function handleConfirmSaveDraft() {
-    if (!draftResult) return;
-    setSavingRule(true);
-    try {
-      const c = draftResult.compiled;
-      await onSaveCompiledRule({
-        projectId: scopeProjectId,
-        kind: c.kind,
-        executionMode: c.executionMode,
-        title: c.title,
-        ruleText: c.ruleText,
-        scopeLabel: c.scopeLabel,
-        matcher:
-          c.kind === 'deterministic_guardrail'
-            ? {
-                protectedPaths: c.protectedPaths,
-                bannedKeywords: c.bannedKeywords,
-                bannedCommands: c.bannedCommands,
-                maxSpendUsd: c.maxSpendUsd,
-                blockExternalSend: c.blockExternalSend,
-              }
-            : {
-                bannedKeywords: c.bannedKeywords,
-              },
-        deactivateConflictingRuleIds: replaceConflicting
-          ? draftResult.conflicts.map((x) => x.conflictingRuleId)
-          : [],
-      });
-      setDraftResult(null);
-      setNaturalText('');
-    } finally {
-      setSavingRule(false);
-    }
-  }
+  const projectMap = new Map(projects.map((p) => [p.id, p.shortName || p.name]));
 
   const scopedRules = policyRules.filter(
     (r) =>
@@ -151,265 +107,498 @@ export function JudgmentMemoryView({
 
   const deterministicRules = scopedRules.filter((r) => r.kind === 'deterministic_guardrail');
   const semanticHabits = scopedRules.filter((r) => r.kind === 'semantic_habit');
+  const totalSavedCount = scopedRules.reduce((acc, r) => acc + r.hitCount, 0);
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  async function handleCompile(e: React.FormEvent) {
+    e.preventDefault();
+    if (!naturalText.trim()) return;
+    setCompileError(null);
+    setCompiling(true);
+    try {
+      const res = await onCompileRule(naturalText.trim(), scopeProjectId);
+      setDraftResult(res);
+      setConflictChoice('replace');
+      setTechDetailsOpen(false);
+    } catch (err: unknown) {
+      setCompileError((err as Error).message || '没连上，检查一下网络再试。');
+    } finally {
+      setCompiling(false);
+    }
+  }
+
+  async function handleConfirmSaveDraft() {
+    if (!draftResult) return;
+    if (draftResult.conflicts.length > 0 && conflictChoice === 'keep_old') {
+      setDraftResult(null);
+      setNaturalText('');
+      return;
+    }
+
+    setSavingRule(true);
+    try {
+      const c = draftResult.compiled;
+      const scopeLabel =
+        scopeProjectId === 'global'
+          ? '所有项目'
+          : projectMap.get(scopeProjectId) || c.scopeLabel;
+      await onSaveCompiledRule({
+        projectId: scopeProjectId,
+        kind: c.kind,
+        executionMode: c.executionMode,
+        title: c.title,
+        ruleText: c.ruleText,
+        scopeLabel,
+        matcher:
+          c.kind === 'deterministic_guardrail'
+            ? {
+                protectedPaths: c.protectedPaths,
+                bannedKeywords: c.bannedKeywords,
+                bannedCommands: c.bannedCommands,
+                maxSpendUsd: c.maxSpendUsd,
+                blockExternalSend: c.blockExternalSend,
+              }
+            : {
+                bannedKeywords: c.bannedKeywords,
+              },
+        deactivateConflictingRuleIds:
+          draftResult.conflicts.length > 0 && conflictChoice === 'replace'
+            ? draftResult.conflicts.map((x) => x.conflictingRuleId)
+            : [],
+      });
+      setDraftResult(null);
+      setNaturalText('');
+    } finally {
+      setSavingRule(false);
+    }
+  }
+
+  function jumpToDecision(decisionId: string) {
+    setHighlightedDecisionId(decisionId);
+    const el = document.getElementById(`decision-${decisionId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    setTimeout(() => {
+      setHighlightedDecisionId((cur) => (cur === decisionId ? null : cur));
+    }, 1500);
+  }
+
+  function renderSwitch(checked: boolean, label: string, onToggle: () => void) {
+    return (
+      <div className="inline-flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          aria-label={label}
+          onClick={onToggle}
+          className={`w-10 h-6 rounded-full border p-0.5 flex items-center cursor-pointer fos-transition ${
+            checked
+              ? 'bg-[#0e3a3d] border-[#0e3a3d] justify-end'
+              : 'bg-white border-[#6f8c8b] justify-start'
+          }`}
+        >
+          <span
+            className={`w-4 h-4 rounded-full ${
+              checked ? 'bg-white' : 'bg-[#6f8c8b]'
+            }`}
+          />
+        </button>
+        <span className="text-[13px] text-[#456669] w-7">{checked ? '在用' : '停了'}</span>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      {/* 1. Quick Correction-to-Policy Compiler */}
-      <section
-        aria-label="纠偏即规则编译器"
-        className="bg-white border border-slate-200 rounded-lg p-5 space-y-4"
-      >
-        <div>
-          <h2 className="text-base font-semibold text-slate-900">
-            随时纠偏立规（Correction-to-Policy 编译器）
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            输入一句吐槽或原则，AI 自动区分“代码确定性硬护栏（Hook 拦截）”与“语义判断习惯”，并强制检测与历史规则是否冲突
+    <div className="max-w-[960px] w-full py-8 px-4 sm:px-6 space-y-8">
+      {/* 6.1 Page Header (J-02) */}
+      <div className="space-y-1">
+        <h1 className="text-[22px] leading-[30px] font-semibold text-[#0e3a3d]">规矩</h1>
+        <p className="text-[15px] leading-6 text-[#456669] tabular-nums">
+          这些规矩帮你省了 {totalSavedCount} 次判断。
+        </p>
+      </div>
+
+      {/* 6.2 Add a Rule (J-03..J-13) */}
+      <section aria-label="加一条规矩" className="pt-6 border-t border-[#c9d6d5] space-y-4">
+        <div className="space-y-1">
+          <h2 className="text-base font-semibold text-[#0e3a3d]">加一条规矩</h2>
+          <p className="text-[13px] leading-5 text-[#456669]">
+            用一句话说你的要求，系统会告诉你它打算怎么执行。
           </p>
         </div>
 
         <form onSubmit={handleCompile} className="flex flex-col sm:flex-row gap-3">
           <select
-            aria-label="规则适用作用域"
+            aria-label="适用范围"
             value={scopeProjectId}
             onChange={(e) => setScopeProjectId(e.target.value)}
-            className="px-3 py-2 text-xs border border-slate-300 rounded-md bg-white text-slate-900 shrink-0"
+            className="h-10 px-3 text-sm bg-white border border-[#6f8c8b] rounded-md text-[#0e3a3d] shrink-0"
           >
-            <option value="global">全局策略 (Global)</option>
+            <option value="global">所有项目</option>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name}
+                {p.shortName || p.name}
               </option>
             ))}
           </select>
 
           <input
             type="text"
-            aria-label="输入自然语言纠偏或约束"
+            aria-label="输入你的要求"
             value={naturalText}
             onChange={(e) => setNaturalText(e.target.value)}
-            placeholder="例如：禁止修改 migrations/ 目录且不许接任何大客户定制开发，优先核心产品上线"
-            className="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-md text-slate-900"
+            placeholder="例如：给客户发的任何东西，发之前都要我看过"
+            className="flex-1 h-10 px-3 text-sm bg-white border border-[#6f8c8b] rounded-md text-[#0e3a3d]"
           />
 
           <button
             type="submit"
             disabled={compiling || !naturalText.trim()}
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 rounded-md whitespace-nowrap shrink-0"
+            className="h-10 px-5 rounded-md bg-[#0e3a3d] hover:bg-[#144c50] disabled:opacity-60 text-[15px] font-semibold text-white whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>{compiling ? '编译检测中...' : '编译并检测冲突'}</span>
+            {compiling ? '正在看…' : '看看怎么执行'}
           </button>
         </form>
 
         {compileError && (
-          <div role="alert" className="px-3 py-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md">
+          <div
+            role="alert"
+            className="px-3.5 py-2.5 rounded-md bg-[#fff6e0] text-[#8a5300] text-[13px]"
+          >
             {compileError}
           </div>
         )}
 
         {draftResult && (
-          <div className="border border-blue-200 bg-blue-50/40 rounded-lg p-4 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-xs font-semibold text-slate-900">
-                编译结果预览：{draftResult.compiled.title}
+          <div className="bg-white border border-[#c9d6d5] rounded-md p-5 space-y-4">
+            <div className="space-y-1">
+              <div className="text-[13px] font-semibold text-[#456669]">系统会这样执行</div>
+              <div className="text-[15px] font-semibold text-[#0e3a3d]">
+                {draftResult.compiled.title}
               </div>
-              <span className="text-xs font-mono text-slate-600">
+              <p className="text-sm text-[#0e3a3d]">{draftResult.compiled.ruleText}</p>
+              <p className="text-[13px] text-[#0b7265]">
                 {draftResult.compiled.kind === 'deterministic_guardrail'
-                  ? '确定性硬护栏 (Hook 强拦截)'
-                  : `语义习惯 (${draftResult.compiled.executionMode})`}
-              </span>
+                  ? '一定拦住：碰到就停，等你点头。'
+                  : '先提醒你：系统觉得像这类事时会来问你。'}
+              </p>
             </div>
 
-            <p className="text-sm text-slate-800">{draftResult.compiled.ruleText}</p>
-
-            {draftResult.compiled.protectedPaths.length > 0 && (
-              <p className="text-xs font-mono text-slate-600">
-                受保护路径：{draftResult.compiled.protectedPaths.join(', ')}
-              </p>
-            )}
-            {draftResult.compiled.bannedKeywords.length > 0 && (
-              <p className="text-xs font-mono text-slate-600">
-                禁用关键词/依赖：{draftResult.compiled.bannedKeywords.join(', ')}
-              </p>
+            {(draftResult.compiled.protectedPaths.length > 0 ||
+              draftResult.compiled.bannedKeywords.length > 0 ||
+              draftResult.compiled.bannedCommands.length > 0) && (
+              <div>
+                <button
+                  type="button"
+                  aria-expanded={techDetailsOpen}
+                  onClick={() => setTechDetailsOpen((v) => !v)}
+                  className="inline-flex items-center gap-1 min-h-8 text-[13px] text-[#456669] hover:text-[#0e3a3d] cursor-pointer"
+                >
+                  {techDetailsOpen ? (
+                    <ChevronDown className="w-4 h-4" strokeWidth={1.75} />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" strokeWidth={1.75} />
+                  )}
+                  <span>技术细节</span>
+                </button>
+                {techDetailsOpen && (
+                  <div className="mt-2 p-3 rounded bg-[#f5f8f7] border border-[#c9d6d5] font-mono text-xs text-[#456669] space-y-1">
+                    {draftResult.compiled.protectedPaths.length > 0 && (
+                      <div>paths: {draftResult.compiled.protectedPaths.join(', ')}</div>
+                    )}
+                    {draftResult.compiled.bannedKeywords.length > 0 && (
+                      <div>keywords: {draftResult.compiled.bannedKeywords.join(', ')}</div>
+                    )}
+                    {draftResult.compiled.bannedCommands.length > 0 && (
+                      <div>commands: {draftResult.compiled.bannedCommands.join(', ')}</div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             {draftResult.conflicts.length > 0 && (
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-md space-y-2">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-900">
-                  <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  <span>检测到与现行策略存在冲突（禁止静默覆盖）</span>
+              <div className="p-4 rounded-md bg-[#fff6e0] space-y-2.5">
+                <div className="text-[13px] font-semibold text-[#8a5300]">
+                  这条和你已有的规矩矛盾
                 </div>
-                {draftResult.conflicts.map((cf) => (
-                  <p key={cf.conflictingRuleId} className="text-xs text-amber-800">
-                    • 与「{cf.conflictingRuleTitle}」冲突：{cf.reason}
-                  </p>
-                ))}
-                <label className="inline-flex items-center gap-2 text-xs text-amber-900 pt-1">
-                  <input
-                    type="checkbox"
-                    checked={replaceConflicting}
-                    onChange={(e) => setReplaceConflicting(e.target.checked)}
-                    className="rounded border-amber-400"
-                  />
-                  <span>确认废止上述冲突旧规则，由新规则接管</span>
-                </label>
+                <ul className="space-y-1 text-[13px] text-[#0e3a3d]">
+                  {draftResult.conflicts.map((cf) => (
+                    <li key={cf.conflictingRuleId}>
+                      和「{cf.conflictingRuleTitle}」矛盾：{cf.reason}
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex flex-col sm:flex-row gap-4 pt-1 text-[13px] text-[#0e3a3d]">
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="rule-conflict-choice"
+                      checked={conflictChoice === 'replace'}
+                      onChange={() => setConflictChoice('replace')}
+                      className="w-[18px] h-[18px] accent-[#0e3a3d]"
+                    />
+                    <span>用新的，停掉旧的</span>
+                  </label>
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="rule-conflict-choice"
+                      checked={conflictChoice === 'keep_old'}
+                      onChange={() => setConflictChoice('keep_old')}
+                      className="w-[18px] h-[18px] accent-[#0e3a3d]"
+                    />
+                    <span>留着旧的，这条不加</span>
+                  </label>
+                </div>
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setDraftResult(null)}
-                className="px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-white rounded"
-              >
-                放弃草案
-              </button>
+            <div className="flex items-center gap-3 pt-1">
               <button
                 type="button"
                 disabled={savingRule}
                 onClick={handleConfirmSaveDraft}
-                className="px-4 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-md"
+                className="h-10 px-5 rounded-md bg-[#0e3a3d] hover:bg-[#144c50] text-[15px] font-semibold text-white cursor-pointer disabled:opacity-60"
               >
-                {savingRule ? '写入中...' : '确认写入规则库'}
+                {savingRule ? '正在加…' : '加上这条规矩'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDraftResult(null)}
+                className="h-9 px-3 text-[13px] text-[#456669] hover:text-[#0e3a3d] cursor-pointer"
+              >
+                不加了
               </button>
             </div>
           </div>
         )}
       </section>
 
-      {/* 2. Hard Guardrails (Deterministic) & Semantic Habits */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <section aria-label="确定性硬护栏列表" className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-              <Shield className="w-4 h-4 text-slate-700" aria-hidden="true" />
-              <span>确定性硬护栏（代码/Hook 100% 拦截）</span>
-            </h3>
-            <span className="text-xs text-slate-500 tabular-nums">{deterministicRules.length} 条</span>
+      {/* 6.3 Rule Lists: Single-column vertical layout (J-14..J-23) */}
+      <section aria-label="一定拦住的规矩" className="pt-6 border-t border-[#c9d6d5] space-y-4">
+        <div className="space-y-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-base font-semibold text-[#0e3a3d]">一定拦住的</h2>
+            <span className="text-[13px] text-[#456669] tabular-nums">
+              {deterministicRules.length} 条
+            </span>
           </div>
+          <p className="text-[13px] text-[#456669]">碰到就停，AI 绕不过去。</p>
+        </div>
 
-          <div className="divide-y divide-slate-200 border border-slate-200 rounded-md">
-            {deterministicRules.map((r) => (
-              <div key={r.id} className="p-3.5 space-y-1.5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-slate-900">{r.title}</div>
-                    <p className="text-xs text-slate-600 mt-0.5">{r.ruleText}</p>
+        <div className="divide-y divide-[#c9d6d5] border-t border-b border-[#c9d6d5]">
+          {deterministicRules.map((r) => {
+            const isDue = r.active && r.reviewAt <= todayIso;
+            const scopeName =
+              r.projectId === 'global'
+                ? '所有项目'
+                : projectMap.get(r.projectId) || r.scopeLabel;
+            return (
+              <div key={r.id} className="py-4 space-y-2">
+                {isDue && (
+                  <div className="px-3 py-2 rounded bg-[#fff6e0] flex flex-wrap items-center justify-between gap-2 text-[13px]">
+                    <span className="text-[#8a5300] font-medium">该再看一次了</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onAckRuleReview(r.id, true)}
+                        className="h-8 px-3 rounded border border-[#6f8c8b] bg-white text-xs font-medium text-[#0e3a3d] cursor-pointer"
+                      >
+                        还管用
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onAckRuleReview(r.id, false)}
+                        className="h-8 px-3 rounded border border-[#6f8c8b] bg-white text-xs font-medium text-[#456669] cursor-pointer"
+                      >
+                        停掉
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onToggleRuleActive(r.id, !r.active)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded border whitespace-nowrap shrink-0 ${
-                      r.active
-                        ? 'text-emerald-700 border-emerald-200 bg-emerald-50'
-                        : 'text-slate-500 border-slate-200 bg-slate-50'
-                    }`}
-                  >
-                    {r.active ? '生效中' : '已停用'}
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 tabular-nums">
-                  <span>{r.scopeLabel}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>已拦截 {r.hitCount} 次</span>
-                  <span aria-hidden="true">·</span>
-                  <span>复核日期 {r.reviewAt}</span>
+                )}
+
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1 min-w-0">
+                    <div className="text-[15px] leading-6 font-semibold text-[#0e3a3d]">
+                      {r.title}
+                    </div>
+                    <p className="text-[13px] leading-5 text-[#0e3a3d]">{r.ruleText}</p>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-[#456669] tabular-nums pt-0.5">
+                      <span>{scopeName}</span>
+                      <span>帮你省了 {r.hitCount} 次</span>
+                      <span>{r.reviewAt} 再看一次</span>
+                      {r.sourceDecisionId && (
+                        <button
+                          type="button"
+                          onClick={() => jumpToDecision(r.sourceDecisionId!)}
+                          className="text-[#0b7265] hover:underline cursor-pointer"
+                        >
+                          来自这次决定
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {renderSwitch(r.active, `开关 ${r.title}`, () =>
+                    onToggleRuleActive(r.id, !r.active)
+                  )}
                 </div>
               </div>
-            ))}
-          </div>
-        </section>
+            );
+          })}
+        </div>
+      </section>
 
-        <section aria-label="语义判断习惯列表" className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-900">
-              语义判断习惯（Checker 核验 · 错用 ≥2 次自动降级）
-            </h3>
-            <span className="text-xs text-slate-500 tabular-nums">{semanticHabits.length} 条</span>
+      <section aria-label="先提醒你的规矩" className="pt-6 border-t border-[#c9d6d5] space-y-4">
+        <div className="space-y-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-base font-semibold text-[#0e3a3d]">先提醒你的</h2>
+            <span className="text-[13px] text-[#456669] tabular-nums">
+              {semanticHabits.length} 条
+            </span>
           </div>
+          <p className="text-[13px] text-[#456669]">靠 AI 判断，可能有看走眼的时候。</p>
+        </div>
 
-          <div className="divide-y divide-slate-200 border border-slate-200 rounded-md">
-            {semanticHabits.map((r) => (
-              <div key={r.id} className="p-3.5 space-y-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-slate-900">{r.title}</div>
-                    <p className="text-xs text-slate-600 mt-0.5">{r.ruleText}</p>
+        <div className="divide-y divide-[#c9d6d5] border-t border-b border-[#c9d6d5]">
+          {semanticHabits.map((r) => {
+            const isDue = r.active && r.reviewAt <= todayIso;
+            const scopeName =
+              r.projectId === 'global'
+                ? '所有项目'
+                : projectMap.get(r.projectId) || r.scopeLabel;
+            return (
+              <div key={r.id} className="py-4 space-y-2.5">
+                {isDue && (
+                  <div className="px-3 py-2 rounded bg-[#fff6e0] flex flex-wrap items-center justify-between gap-2 text-[13px]">
+                    <span className="text-[#8a5300] font-medium">该再看一次了</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onAckRuleReview(r.id, true)}
+                        className="h-8 px-3 rounded border border-[#6f8c8b] bg-white text-xs font-medium text-[#0e3a3d] cursor-pointer"
+                      >
+                        还管用
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onAckRuleReview(r.id, false)}
+                        className="h-8 px-3 rounded border border-[#6f8c8b] bg-white text-xs font-medium text-[#456669] cursor-pointer"
+                      >
+                        停掉
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onToggleRuleActive(r.id, !r.active)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded border whitespace-nowrap shrink-0 ${
-                      r.active
-                        ? 'text-emerald-700 border-emerald-200 bg-emerald-50'
-                        : 'text-slate-500 border-slate-200 bg-slate-50'
-                    }`}
-                  >
-                    {r.active ? '生效中' : '已停用'}
-                  </button>
+                )}
+
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1 min-w-0">
+                    <div className="text-[15px] leading-6 font-semibold text-[#0e3a3d]">
+                      {r.title}
+                    </div>
+                    <p className="text-[13px] leading-5 text-[#0e3a3d]">{r.ruleText}</p>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-[#456669] tabular-nums pt-0.5">
+                      <span>{scopeName}</span>
+                      <span>帮你省了 {r.hitCount} 次</span>
+                      <span
+                        className={
+                          r.misappliedCount > 0 ? 'text-[#c93a1f] font-medium' : ''
+                        }
+                      >
+                        办错过 {r.misappliedCount} 次
+                      </span>
+                      <span>{r.reviewAt} 再看一次</span>
+                      {r.sourceDecisionId && (
+                        <button
+                          type="button"
+                          onClick={() => jumpToDecision(r.sourceDecisionId!)}
+                          className="text-[#0b7265] hover:underline cursor-pointer"
+                        >
+                          来自这次决定
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {renderSwitch(r.active, `开关 ${r.title}`, () =>
+                    onToggleRuleActive(r.id, !r.active)
+                  )}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="text-slate-500 tabular-nums">
-                    <span>命中 {r.hitCount} 次</span>
-                    <span className="mx-1.5" aria-hidden="true">·</span>
-                    <span className={r.misappliedCount > 0 ? 'text-red-700 font-medium' : ''}>
-                      误用/撤销 {r.misappliedCount} 次
-                    </span>
-                  </div>
-
-                  <select
-                    aria-label={`${r.title} 执行策略`}
-                    value={r.executionMode}
-                    onChange={(e) =>
-                      onChangeHabitMode(
-                        r.id,
-                        e.target.value as 'suggest_only' | 'auto_apply_reversible'
-                      )
-                    }
-                    className="px-2 py-1 text-xs border border-slate-300 rounded bg-white text-slate-800"
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1">
+                  <div
+                    role="group"
+                    aria-label={`${r.title} 处理方式`}
+                    className="inline-flex rounded-md border border-[#6f8c8b] bg-white overflow-hidden self-start"
                   >
-                    <option value="suggest_only">仅提示 / 升级确认</option>
-                    <option value="auto_apply_reversible">可逆场景自动沿用</option>
-                  </select>
+                    <button
+                      type="button"
+                      onClick={() => onChangeHabitMode(r.id, 'suggest_only')}
+                      className={`h-8 px-3 text-xs font-medium cursor-pointer ${
+                        r.executionMode === 'suggest_only'
+                          ? 'bg-[#0e3a3d] text-white'
+                          : 'text-[#456669] hover:text-[#0e3a3d]'
+                      }`}
+                    >
+                      先问我
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onChangeHabitMode(r.id, 'auto_apply_reversible')}
+                      className={`h-8 px-3 text-xs font-medium border-l border-[#6f8c8b] cursor-pointer ${
+                        r.executionMode === 'auto_apply_reversible'
+                          ? 'bg-[#0e3a3d] text-white'
+                          : 'text-[#456669] hover:text-[#0e3a3d]'
+                      }`}
+                    >
+                      自动办
+                    </button>
+                  </div>
+                  {r.executionMode === 'auto_apply_reversible' && (
+                    <span className="text-xs text-[#456669]">只对能反悔的事自动。</span>
+                  )}
                 </div>
+
+                {r.misappliedCount >= 2 && (
+                  <div className="px-3 py-2 rounded bg-[#fff6e0] text-[#8a5300] text-[13px]">
+                    办错两次，已改回先问你。
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
-        </section>
-      </div>
+            );
+          })}
+        </div>
+      </section>
 
-      {/* 3. Auto-Applied Reversible Actions (Undoable) */}
-      <section aria-label="习惯自动执行可撤销日志" className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
-        <h3 className="text-sm font-semibold text-slate-900">
-          习惯自动放行审计（随时可 1 键撤销并计入误用率）
-        </h3>
+      {/* 6.4 Auto-applied actions by rule (J-24..J-28) */}
+      <section aria-label="系统按规矩替你办的" className="pt-6 border-t border-[#c9d6d5] space-y-4">
+        <h2 className="text-base font-semibold text-[#0e3a3d]">系统按规矩替你办的</h2>
         {autoAppliedActions.length === 0 ? (
-          <p className="text-xs text-slate-500">暂无自动放行动作</p>
+          <p className="text-[13px] text-[#456669]">还没有。</p>
         ) : (
-          <div className="divide-y divide-slate-200 border border-slate-200 rounded-md">
+          <div className="divide-y divide-[#c9d6d5] border-t border-b border-[#c9d6d5]">
             {autoAppliedActions.map((act) => (
               <div
                 key={act.id}
-                className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
               >
                 <div className="space-y-0.5">
-                  <div className="font-medium text-slate-900">
-                    {act.threadTitle} · 沿用「{act.ruleTitle}」
+                  <div className="text-[15px] leading-6 text-[#0e3a3d]">{act.threadTitle}</div>
+                  <div className="text-[13px] text-[#456669] tabular-nums">
+                    按规矩：{act.ruleTitle} · {formatRelativeTime(act.timestamp)}
                   </div>
-                  <div className="text-slate-600">{act.actionTaken}</div>
                 </div>
                 {act.undone ? (
-                  <span className="text-slate-400 font-medium whitespace-nowrap">已撤销并降级</span>
+                  <span className="text-[13px] text-[#456669] shrink-0">已撤回</span>
                 ) : (
                   <button
                     type="button"
                     onClick={() => onUndoAutoAction(act.id)}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 border border-red-200 rounded-md whitespace-nowrap shrink-0"
+                    className="h-9 px-3.5 rounded-md border border-[#6f8c8b] bg-white hover:bg-[#fdf1ee] text-[13px] font-medium text-[#c93a1f] whitespace-nowrap shrink-0 cursor-pointer self-start sm:self-center"
                   >
-                    <RotateCcw className="w-3 h-3" aria-hidden="true" />
-                    <span>撤销并计为误用</span>
+                    撤回，这次办错了
                   </button>
                 )}
               </div>
@@ -418,70 +607,135 @@ export function JudgmentMemoryView({
         )}
       </section>
 
-      {/* 4. Decision Ledger & L3/L4 Outcome Check */}
-      <section aria-label="历史决策账本与结果复盘" className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-900">
-            历史决策账本与事后真实结果验证（L3/L4 Outcome Check）
-          </h3>
-          <p className="text-xs text-slate-500 mt-0.5">
-            任务跑完不等于商业目标达成，在此标记历史决策事后真实效果
+      {/* 6.5 Past Decisions & Lookback (J-29..J-34) */}
+      <section aria-label="过往决定" className="pt-6 border-t border-[#c9d6d5] space-y-4">
+        <div className="space-y-1">
+          <h2 className="text-base font-semibold text-[#0e3a3d]">过往决定</h2>
+          <p className="text-[13px] text-[#456669]">
+            当时定完后结果怎么样，可以在这里记一笔。
           </p>
         </div>
 
-        <div className="divide-y divide-slate-200 border border-slate-200 rounded-md">
-          {scopedDecisions.map((rec) => (
-            <div key={rec.id} className="p-4 space-y-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm font-medium text-slate-900">{rec.caseTitle}</div>
-                <span className="text-xs font-mono text-slate-500">
-                  {new Date(rec.decidedAt).toLocaleDateString()}
-                </span>
-              </div>
-              <div className="text-xs text-slate-700">
-                拍板选择：<span className="font-semibold">{rec.chosenOptionLabel}</span>
-                <span className="mx-2 text-slate-300">·</span>
-                <span>理由：{rec.userRationale}</span>
-              </div>
+        {scopedDecisions.length === 0 ? (
+          <p className="text-[13px] text-[#456669]">还没有记录。</p>
+        ) : (
+          <div className="divide-y divide-[#c9d6d5] border-t border-b border-[#c9d6d5]">
+            {scopedDecisions.map((rec) => {
+              const activeVerdict = selectedOutcomeVerdict[rec.id];
+              const isHighlighted = highlightedDecisionId === rec.id;
+              return (
+                <div
+                  key={rec.id}
+                  id={`decision-${rec.id}`}
+                  className={`py-4 space-y-2 fos-transition ${
+                    isHighlighted ? 'bg-[#eaf6f3] px-3 -mx-3 rounded' : ''
+                  }`}
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <div className="text-[15px] leading-6 font-semibold text-[#0e3a3d]">
+                      {rec.caseTitle}
+                    </div>
+                    <span className="text-xs text-[#456669] tabular-nums">
+                      {formatRelativeTime(rec.decidedAt)}
+                    </span>
+                  </div>
 
-              {rec.outcomeCheck ? (
-                <div className="inline-flex items-center gap-2 px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-md text-slate-800">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
-                  <span>
-                    事后复盘：{rec.outcomeCheck.verdict.toUpperCase()} — {rec.outcomeCheck.note}
-                  </span>
+                  <div className="text-[13px] text-[#456669]">
+                    当时选：<span className="text-[#0e3a3d] font-medium">{rec.chosenOptionLabel}</span>
+                    <span className="mx-2 text-[#c9d6d5]" aria-hidden="true">
+                      /
+                    </span>
+                    <span>{rec.userRationale}</span>
+                  </div>
+
+                  {rec.outcomeCheck ? (
+                    <div className="text-[13px] text-[#0e3a3d] pt-1">
+                      <span
+                        className={
+                          rec.outcomeCheck.verdict === 'win'
+                            ? 'text-[#0b7265] font-medium'
+                            : rec.outcomeCheck.verdict === 'miss'
+                              ? 'text-[#c93a1f] font-medium'
+                              : 'text-[#456669] font-medium'
+                        }
+                      >
+                        后来：
+                        {rec.outcomeCheck.verdict === 'win'
+                          ? '管用'
+                          : rec.outcomeCheck.verdict === 'miss'
+                            ? '不管用'
+                            : '说不好'}
+                        。
+                      </span>{' '}
+                      <span className="text-[#456669]">{rec.outcomeCheck.note}</span>
+                    </div>
+                  ) : (
+                    <div className="pt-1 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {(
+                          [
+                            { v: 'win' as const, label: '管用' },
+                            { v: 'miss' as const, label: '不管用' },
+                            { v: 'neutral' as const, label: '说不好' },
+                          ] as const
+                        ).map((item) => (
+                          <button
+                            key={item.v}
+                            type="button"
+                            onClick={() =>
+                              setSelectedOutcomeVerdict((prev) => ({
+                                ...prev,
+                                [rec.id]: item.v,
+                              }))
+                            }
+                            className={`h-8 px-3 rounded-md text-[13px] cursor-pointer ${
+                              activeVerdict === item.v
+                                ? 'border-2 border-[#0e3a3d] bg-[#f5f8f7] text-[#0e3a3d] font-semibold'
+                                : 'border border-[#6f8c8b] bg-white text-[#0e3a3d] hover:bg-[#f5f8f7]'
+                            }`}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {activeVerdict && (
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="text"
+                            aria-label={`为 ${rec.caseTitle} 补一句说明`}
+                            value={outcomeNotes[rec.id] || ''}
+                            onChange={(e) =>
+                              setOutcomeNotes((prev) => ({
+                                ...prev,
+                                [rec.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="一句话说说（可不填）"
+                            className="flex-1 h-10 px-3 text-sm bg-white border border-[#6f8c8b] rounded-md text-[#0e3a3d]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onSubmitOutcome(
+                                rec.id,
+                                activeVerdict,
+                                outcomeNotes[rec.id] || ''
+                              )
+                            }
+                            className="h-10 px-4 rounded-md bg-[#0e3a3d] text-sm font-semibold text-white whitespace-nowrap cursor-pointer"
+                          >
+                            记下
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <input
-                    type="text"
-                    aria-label={`为决策 ${rec.caseTitle} 填写事后结果`}
-                    value={outcomeNotes[rec.id] || ''}
-                    onChange={(e) =>
-                      setOutcomeNotes((prev) => ({ ...prev, [rec.id]: e.target.value }))
-                    }
-                    placeholder="填写几日后的真实业务/系统结果反馈..."
-                    className="flex-1 min-w-[220px] px-3 py-1.5 text-xs border border-slate-300 rounded-md text-slate-900"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onSubmitOutcome(rec.id, 'win', outcomeNotes[rec.id] || '')}
-                    className="px-3 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-md whitespace-nowrap"
-                  >
-                    符合预期 (Win)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onSubmitOutcome(rec.id, 'miss', outcomeNotes[rec.id] || '')}
-                    className="px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-md whitespace-nowrap"
-                  >
-                    未达预期 (Miss)
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </section>
     </div>
   );

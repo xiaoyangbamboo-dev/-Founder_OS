@@ -1,19 +1,18 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import {
   detectRuleConflicts,
   routeSubmissionThroughFirewall,
   sortDecisionCasesByPriority,
-} from './src/core/firewall';
+} from './src/core/firewall.ts';
 import {
   buildAgentMessageRecord,
   buildPlainBossExplanation,
   defaultRoleForChannel,
   generateAgentHandshakePrompt,
   triageAgentMessage,
-} from './src/core/ingest';
+} from './src/core/ingest.ts';
 import {
   buildDecisionCaseFromEscalation,
   compileCorrectionWithGemini,
@@ -21,8 +20,8 @@ import {
   runAdversarialSemanticChecker,
   synthesizeResumeBriefWithGemini,
   translateAgentMessageWithGemini,
-} from './src/server/geminiService';
-import { loadState, resetState, saveState } from './src/server/store';
+} from './src/server/geminiService.ts';
+import { loadState, resetState, saveState } from './src/server/store.ts';
 import type {
   AgentChannel,
   DecisionCase,
@@ -30,9 +29,9 @@ import type {
   PolicyRule,
   SubmissionPayload,
   WorkThread,
-} from './src/types/founderOs';
+} from './src/types/founderOs.ts';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
   const app = express();
@@ -55,37 +54,44 @@ async function startServer() {
 
   // 3. Create a new concurrent WorkThread
   app.post('/api/threads', (req, res) => {
-    const { projectId, title, anchorGoal, adapterType, branchOrWorktree } = req.body as {
+    const { projectId, title, anchorGoal, constraintsText, adapterType, sourceAgentName, branchOrWorktree } = req.body as {
       projectId?: string;
       title?: string;
       anchorGoal?: string;
+      constraintsText?: string;
       adapterType?: 'claude_code_hook' | 'git_merge_gate';
+      sourceAgentName?: string;
       branchOrWorktree?: string;
     };
 
     if (!projectId || !title || !anchorGoal) {
-      res.status(400).json({ error: 'projectId, title, and anchorGoal are required' });
+      res.status(400).json({ error: '请填写项目、要做什么以及限制条件' });
       return;
     }
 
     const state = loadState();
     const project = state.projects.find((p) => p.id === projectId);
     if (!project) {
-      res.status(404).json({ error: 'Project not found' });
+      res.status(404).json({ error: '未找到所属项目' });
       return;
     }
 
     const now = new Date().toISOString();
-    const activeConstraints = state.policyRules
+    const projectConstraints = state.policyRules
       .filter((r) => r.active && (r.projectId === 'global' || r.projectId === project.id))
       .slice(0, 3)
       .map((r) => ({
         text: r.title,
-        sourceLabel: `Rule ${r.id}`,
+        sourceLabel: r.scopeLabel,
       }));
+
+    const activeConstraints = constraintsText?.trim()
+      ? [{ text: constraintsText.trim(), sourceLabel: '你的要求' }, ...projectConstraints]
+      : projectConstraints;
 
     const chosenAdapter = adapterType === 'git_merge_gate' ? 'git_merge_gate' : 'claude_code_hook';
     const threadId = `thr-${Date.now()}`;
+    const agentDisplay = sourceAgentName?.trim() || (chosenAdapter === 'claude_code_hook' ? 'Claude Code' : 'WorkBuddy');
 
     const newThread: WorkThread = {
       id: threadId,
@@ -93,10 +99,9 @@ async function startServer() {
       title: title.trim(),
       kind: 'code',
       adapterType: chosenAdapter,
-      adapterLabel:
-        chosenAdapter === 'claude_code_hook'
-          ? 'Claude Code · Hook'
-          : 'Git Merge Gate · PR',
+      adapterLabel: agentDisplay,
+      sourceAgentName: agentDisplay,
+      agentChannel: chosenAdapter === 'claude_code_hook' ? 'cli_hook' : 'desktop_app',
       branchOrWorktree: branchOrWorktree?.trim() || `wt/${threadId.slice(-4)}`,
       status: 'Running',
       bounceCount: 0,
@@ -107,27 +112,27 @@ async function startServer() {
       priorityScore: 55,
       degradedModeReason:
         project.verificationTier === 'tier_build_only'
-          ? '当前仓库未配置自动化测试（tier_build_only），将降级为构建与 Diff 语义检查'
+          ? '这个项目没有自动测试，系统只能检查到这一步。'
           : undefined,
       resumeBrief: {
         threadId,
         anchorGoal: {
           text: anchorGoal.trim(),
-          sourceLabel: 'Founder Input',
+          sourceLabel: '你的要求',
         },
         activeConstraints,
         deltaSummary: {
-          text: '线程已挂载至执行钩子，尚未收到初次交付物',
-          sourceLabel: 'Thread Created',
+          text: '刚建好，还没有收到 AI 交回来的进展',
+          sourceLabel: '刚刚建好',
         },
         blockerReason: {
-          text: '后台执行中，暂无需创始人关注',
-          sourceLabel: 'Running',
+          text: '正在做，不用你管',
+          sourceLabel: '进行中',
         },
         costOfDelay: '正常推进中',
         degradationNotice:
           project.verificationTier === 'tier_build_only'
-            ? '当前仓库无自动化测试套件，L1 仅能验证打包成功。'
+            ? '这个项目没有自动测试，系统只能检查到这一步。'
             : undefined,
         updatedAt: now,
       },
@@ -136,9 +141,9 @@ async function startServer() {
         {
           id: `tr-${Date.now()}`,
           timestamp: now,
-          actor: 'Founder',
+          actor: '你',
           kind: 'human',
-          summary: `创建并行线程「${title.trim()}」，注入 ${activeConstraints.length} 条活跃护栏`,
+          summary: `新建一件事「${title.trim()}」`,
         },
       ],
     };
@@ -320,12 +325,14 @@ async function startServer() {
     state.digestEvents.unshift({
       id: `dig-${Date.now()}`,
       threadId: thread.id,
+      projectId: project.id,
       threadTitle: thread.title,
       eventType: digestType,
-      summary: outcome.reasons[0] || '已处理交付校验',
+      summary: outcome.reasons[0] || '已处理交付检查',
+      rawContent: submission.diffSnippet || submission.claims,
       timestamp: now,
     });
-    state.digestEvents = state.digestEvents.slice(0, 20);
+    state.digestEvents = state.digestEvents.slice(0, 30);
 
     state.agentMessages.unshift({
       id: `msg-${Date.now()}`,
@@ -465,12 +472,17 @@ async function startServer() {
 
       if (useAiTranslator) {
         try {
-          const tr = await translateAgentMessageWithGemini({
-            agentName: agentName.trim(),
-            rawMessage: rawMessage.trim(),
-            projectName: project.name,
-            activeRules: state.policyRules,
-          });
+          const tr = await Promise.race([
+            translateAgentMessageWithGemini({
+              agentName: agentName.trim(),
+              rawMessage: rawMessage.trim(),
+              projectName: project.name,
+              activeRules: state.policyRules,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('AI 翻译超时，已使用本地规则判断')), 4500)
+            ),
+          ]);
           translatedSummary = tr.plainSummary;
           translatedRisk = tr.plainRisk;
           state.qualityMetrics.totalVerificationSpendUsd = Number(
@@ -681,12 +693,14 @@ async function startServer() {
       state.digestEvents.unshift({
         id: `dig-ing-${Date.now()}`,
         threadId: msgRecord.threadId || project.id,
-        threadTitle: `${agentName.trim()} 反馈`,
+        projectId: project.id,
+        threadTitle: `${project.shortName || project.name} · ${agentName.trim()}`,
         eventType: triage.triageStatus === 'needs_you' ? 'blocked' : 'silent_pass',
         summary: `${triage.handledOutcome}：${triage.plainSummary}`,
+        rawContent: rawMessage.trim(),
         timestamp: now,
       });
-      state.digestEvents = state.digestEvents.slice(0, 20);
+      state.digestEvents = state.digestEvents.slice(0, 30);
 
       saveState(state);
       res.status(201).json({
@@ -757,7 +771,7 @@ async function startServer() {
     res.json({ projectId: project.id, projectName: project.name, roleLabel, prompt });
   });
 
-  // 6c. Non-coder 1-click "翻成大白话 / 打个比方" explanation for any Decision Case
+  // 6c. Non-coder "换个说法 / 再举个例子" explanation for any Decision Case
   app.post('/api/cases/:id/explain', async (req, res) => {
     const state = loadState();
     const dCase = state.decisionCases.find((c) => c.id === req.params.id);
@@ -766,7 +780,9 @@ async function startServer() {
       return;
     }
     const project = state.projects.find((p) => p.id === dCase.projectId);
-    const useAi = Boolean((req.body as { useAi?: boolean })?.useAi);
+    const body = (req.body || {}) as { useAi?: boolean; variantIndex?: number };
+    const useAi = Boolean(body.useAi);
+    const variantIndex = typeof body.variantIndex === 'number' ? body.variantIndex : 0;
 
     if (useAi) {
       try {
@@ -781,7 +797,11 @@ async function startServer() {
         res.json({ source: 'gemini', explanation });
         return;
       } catch (err: unknown) {
-        const fallback = buildPlainBossExplanation({ decisionCase: dCase, project });
+        const fallback = buildPlainBossExplanation({
+          decisionCase: dCase,
+          project,
+          variantIndex,
+        });
         res.json({
           source: 'deterministic_fallback',
           note: (err as Error).message,
@@ -791,7 +811,11 @@ async function startServer() {
       }
     }
 
-    const fallback = buildPlainBossExplanation({ decisionCase: dCase, project });
+    const fallback = buildPlainBossExplanation({
+      decisionCase: dCase,
+      project,
+      variantIndex,
+    });
     res.json({ source: 'deterministic', explanation: fallback });
   });
 
@@ -829,7 +853,46 @@ async function startServer() {
     res.json({ thread });
   });
 
-  // 8. Resolve a 30-second Decision Case (+ Optional Rule Capture + Extra Note / Context Upload to Agent)
+  // 8. Resolve a Decision Case (+ Optional Rule Capture + Snooze + Undo + Extra Note / Context Upload)
+  app.post('/api/cases/:id/snooze', (req, res) => {
+    const { preset } = req.body as {
+      preset?: 'tonight' | 'tomorrow_morning' | 'next_monday';
+    };
+    const state = loadState();
+    const dCase = state.decisionCases.find((c) => c.id === req.params.id);
+    if (!dCase) {
+      res.status(404).json({ error: '未找到这件待拍板的事' });
+      return;
+    }
+
+    const nowDate = new Date();
+    const target = new Date(nowDate);
+    let reasonLabel = '你说今晚再看';
+
+    if (preset === 'tomorrow_morning') {
+      target.setDate(target.getDate() + 1);
+      target.setHours(9, 0, 0, 0);
+      reasonLabel = '你说留到明天上午';
+    } else if (preset === 'next_monday') {
+      const day = target.getDay();
+      const daysUntilMon = day === 0 ? 1 : 8 - day;
+      target.setDate(target.getDate() + daysUntilMon);
+      target.setHours(9, 0, 0, 0);
+      reasonLabel = '你说下周一再定';
+    } else {
+      target.setHours(20, 0, 0, 0);
+      if (target.getTime() <= nowDate.getTime()) {
+        target.setTime(nowDate.getTime() + 4 * 60 * 60 * 1000);
+      }
+      reasonLabel = '你说今晚再看';
+    }
+
+    dCase.snoozedUntil = target.toISOString();
+    dCase.snoozeReasonLabel = reasonLabel;
+    saveState(state);
+    res.json({ decisionCase: dCase });
+  });
+
   app.post('/api/cases/:id/decide', (req, res) => {
     const {
       chosenOptionId,
@@ -840,6 +903,8 @@ async function startServer() {
       saveAsRule,
       customRuleText,
       markAsFalsePositive,
+      dismissMode,
+      decisionDurationSeconds,
     } = req.body as {
       chosenOptionId?: string;
       userRationale?: string;
@@ -849,29 +914,44 @@ async function startServer() {
       saveAsRule?: boolean;
       customRuleText?: string;
       markAsFalsePositive?: boolean;
+      dismissMode?: 'always' | 'once';
+      decisionDurationSeconds?: number;
     };
 
     const state = loadState();
     const dCase = state.decisionCases.find((c) => c.id === req.params.id);
     if (!dCase) {
-      res.status(404).json({ error: 'Decision Case not found' });
+      res.status(404).json({ error: '未找到这件待拍板的事' });
       return;
     }
 
     const option = dCase.options.find((o) => o.id === chosenOptionId);
     if (!option) {
-      res.status(400).json({ error: 'Invalid chosenOptionId' });
+      res.status(400).json({ error: '请选择一个有效选项' });
       return;
     }
 
     const now = new Date().toISOString();
     dCase.status = 'Decided';
+    dCase.snoozedUntil = undefined;
+    dCase.snoozeReasonLabel = undefined;
+
+    if (typeof decisionDurationSeconds === 'number' && decisionDurationSeconds > 0 && decisionDurationSeconds < 3600) {
+      state.qualityMetrics.decisionDurationsSeconds = [
+        ...(state.qualityMetrics.decisionDurationsSeconds || []),
+        Math.round(decisionDurationSeconds),
+      ].slice(-50);
+    }
+
     if (markAsFalsePositive) {
       dCase.markedAsFalsePositive = true;
       state.qualityMetrics.falseBounceCount += 1;
     }
 
     let spawnedRule: PolicyRule | undefined;
+    const projectObj = state.projects.find((p) => p.id === dCase.projectId);
+    const scopeName = projectObj?.shortName || projectObj?.name || '当前项目';
+
     if (saveAsRule) {
       const ruleText = (customRuleText || dCase.candidateRuleText).trim();
       spawnedRule = {
@@ -879,13 +959,31 @@ async function startServer() {
         projectId: dCase.projectId,
         kind: dCase.candidateRuleKind,
         executionMode: 'suggest_only',
-        title: `决策沉淀：${dCase.title.slice(0, 18)}`,
+        title: dCase.title.replace(/[？?]/g, '').slice(0, 20),
         ruleText,
-        scopeLabel: `${dCase.projectId} · 由拍板自动沉淀`,
+        scopeLabel: scopeName,
         sourceDecisionId: dCase.id,
         version: 1,
         reviewAt: '2026-12-31',
         hitCount: 0,
+        misappliedCount: 0,
+        active: true,
+        createdAt: now,
+      };
+      state.policyRules.unshift(spawnedRule);
+    } else if (dismissMode === 'always') {
+      spawnedRule = {
+        id: `rule-mute-${Date.now()}`,
+        projectId: dCase.projectId,
+        kind: 'semantic_habit',
+        executionMode: 'auto_apply_reversible',
+        title: `不再问：${dCase.title.replace(/[？?]/g, '').slice(0, 16)}`,
+        ruleText: `遇到与「${dCase.title}」同类的事，直接按「${option.label}」处理，不用再问我`,
+        scopeLabel: scopeName,
+        sourceDecisionId: dCase.id,
+        version: 1,
+        reviewAt: '2026-12-31',
+        hitCount: 1,
         misappliedCount: 0,
         active: true,
         createdAt: now,
@@ -900,6 +998,9 @@ async function startServer() {
     ].filter(Boolean);
     const contextClean = contextParts.join(' · ');
 
+    const reviewAfterDate = new Date();
+    reviewAfterDate.setDate(reviewAfterDate.getDate() + 3);
+
     const recordId = `dec-${Date.now()}`;
     state.decisionRecords.unshift({
       id: recordId,
@@ -909,12 +1010,19 @@ async function startServer() {
       caseTitle: dCase.title,
       chosenOptionId: option.id,
       chosenOptionLabel: option.label,
-      userRationale: (userRationale || '').trim() || '依据总控台拍板处理',
+      userRationale: (userRationale || '').trim() || `选择了「${option.label}」`,
       extraInstructionToAgent: extraNoteClean || undefined,
       uploadedContextNote: contextClean || undefined,
       spawnedRuleId: spawnedRule?.id,
+      decisionDurationSeconds:
+        typeof decisionDurationSeconds === 'number' ? Math.round(decisionDurationSeconds) : undefined,
+      reviewAfterAt: reviewAfterDate.toISOString(),
       decidedAt: now,
     });
+
+    if (spawnedRule) {
+      spawnedRule.sourceDecisionId = recordId;
+    }
 
     const thread = state.threads.find((t) => t.id === dCase.threadId);
     if (thread) {
@@ -927,17 +1035,17 @@ async function startServer() {
       thread.trace.push({
         id: `tr-${Date.now()}`,
         timestamp: now,
-        actor: '老板拍板',
+        actor: '你',
         kind: 'human',
-        summary: `拍板选择「${option.label}」${extraNoteClean ? ` · 附带给 AI 备注：「${extraNoteClean}」` : ''}${contextClean ? ` · 补充外部材料：「${contextClean}」` : ''}`,
+        summary: `拍板选了「${option.label}」${extraNoteClean ? ` · 附言：「${extraNoteClean}」` : ''}${contextClean ? ` · 补充资料：「${contextClean}」` : ''}`,
       });
       thread.resumeBrief.deltaSummary = {
-        text: `已拍板「${option.label}」${extraNoteClean ? `（附注：${extraNoteClean}）` : ''}`,
-        sourceLabel: `Decision ${recordId}`,
+        text: `已按「${option.label}」处理${extraNoteClean ? `（附：${extraNoteClean}）` : ''}`,
+        sourceLabel: `决定 ${recordId}`,
         decisionId: recordId,
       };
       thread.resumeBrief.blockerReason = {
-        text: isApprove ? '已批准放行' : '已按拍板指令下发执行',
+        text: isApprove ? '已放行继续' : '已按你的决定发给 AI 执行',
         sourceLabel: option.id,
       };
     }
@@ -957,8 +1065,8 @@ async function startServer() {
         targetAgentName: dCase.sourceAgentName || '执行 AI',
         commandText: [
           `针对「${dCase.title}」已选「${option.label}」`,
-          extraNoteClean ? `额外要求：${extraNoteClean}` : '',
-          contextClean ? `补充信息：${contextClean}` : '',
+          extraNoteClean ? `补充要求：${extraNoteClean}` : '',
+          contextClean ? `补充资料：${contextClean}` : '',
         ]
           .filter(Boolean)
           .join(' | '),
@@ -975,6 +1083,97 @@ async function startServer() {
       spawnedRule,
       thread,
     });
+  });
+
+  app.post('/api/cases/:id/undo-decide', (req, res) => {
+    const { decisionRecordId } = (req.body || {}) as { decisionRecordId?: string };
+    const state = loadState();
+    const dCase = state.decisionCases.find((c) => c.id === req.params.id);
+    if (!dCase) {
+      res.status(404).json({ error: '未找到这件事项' });
+      return;
+    }
+
+    dCase.status = 'Needs Human';
+    if (dCase.markedAsFalsePositive) {
+      dCase.markedAsFalsePositive = false;
+      state.qualityMetrics.falseBounceCount = Math.max(
+        0,
+        state.qualityMetrics.falseBounceCount - 1
+      );
+    }
+
+    const recIdx = state.decisionRecords.findIndex((r) =>
+      decisionRecordId ? r.id === decisionRecordId : r.caseId === dCase.id
+    );
+    if (recIdx !== -1) {
+      const removed = state.decisionRecords[recIdx];
+      if (removed.spawnedRuleId) {
+        state.policyRules = state.policyRules.filter((r) => r.id !== removed.spawnedRuleId);
+      }
+      state.decisionRecords.splice(recIdx, 1);
+    }
+
+    const thread = state.threads.find((t) => t.id === dCase.threadId);
+    if (thread) {
+      thread.status = 'Needs You';
+      thread.updatedAt = new Date().toISOString();
+      thread.trace.push({
+        id: `tr-undo-${Date.now()}`,
+        timestamp: thread.updatedAt,
+        actor: '你',
+        kind: 'human',
+        summary: '撤回了刚才的拍板，退回等你重选',
+      });
+    }
+
+    saveState(state);
+    res.json({ decisionCase: dCase, thread });
+  });
+
+  app.post('/api/rules/from-decision/:decisionId', (req, res) => {
+    const state = loadState();
+    const rec = state.decisionRecords.find((r) => r.id === req.params.decisionId);
+    if (!rec) {
+      res.status(404).json({ error: '未找到这条决定记录' });
+      return;
+    }
+    if (rec.spawnedRuleId) {
+      const existing = state.policyRules.find((r) => r.id === rec.spawnedRuleId);
+      if (existing) {
+        res.json({ rule: existing });
+        return;
+      }
+    }
+
+    const dCase = state.decisionCases.find((c) => c.id === rec.caseId);
+    const projectObj = state.projects.find((p) => p.id === rec.projectId);
+    const ruleText =
+      (req.body as { ruleText?: string })?.ruleText?.trim() ||
+      dCase?.candidateRuleText ||
+      `遇到「${rec.caseTitle}」同类的事，按「${rec.chosenOptionLabel}」处理`;
+
+    const created: PolicyRule = {
+      id: `rule-${Date.now()}`,
+      projectId: rec.projectId,
+      kind: dCase?.candidateRuleKind || 'semantic_habit',
+      executionMode: 'suggest_only',
+      title: rec.caseTitle.replace(/[？?]/g, '').slice(0, 20),
+      ruleText,
+      scopeLabel: projectObj?.shortName || projectObj?.name || '所有项目',
+      sourceDecisionId: rec.id,
+      version: 1,
+      reviewAt: '2026-12-31',
+      hitCount: 0,
+      misappliedCount: 0,
+      active: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    rec.spawnedRuleId = created.id;
+    state.policyRules.unshift(created);
+    saveState(state);
+    res.status(201).json({ rule: created });
   });
 
   // 8b. Proactive Founder-to-Agent Command Dispatch (even when Agent has ZERO problems/errors)
@@ -1054,19 +1253,25 @@ async function startServer() {
     const state = loadState();
     const thread = state.threads.find((t) => t.id === req.params.id);
     if (!thread) {
-      res.status(404).json({ error: 'Thread not found' });
+      res.status(404).json({ error: '未找到这件事项' });
       return;
     }
 
     const now = new Date().toISOString();
+    const reasonText = (note || '你指出这件事其实有问题，已打回让它重做').trim();
     state.qualityMetrics.escapedDefectsCount += 1;
-    thread.status = 'Needs You';
+    thread.status = 'Auto-Fixing';
+    thread.updatedAt = now;
+    thread.resumeBrief.blockerReason = {
+      text: `打回重做中：${reasonText}`,
+      sourceLabel: '你的反馈',
+    };
     thread.trace.push({
       id: `tr-${Date.now()}`,
       timestamp: now,
-      actor: 'Founder (Missed Report)',
+      actor: '你',
       kind: 'human',
-      summary: `标记漏报缺陷：${(note || '核验放行后实际仍存在问题').trim()}`,
+      summary: `指出有问题并打回重做：${reasonText}`,
     });
     saveState(state);
     res.json({ qualityMetrics: state.qualityMetrics, thread });
@@ -1220,6 +1425,59 @@ async function startServer() {
     res.json({ rule });
   });
 
+  app.post('/api/rules/:id/ack-review', (req, res) => {
+    const { stillWorks } = (req.body || {}) as { stillWorks?: boolean };
+    const state = loadState();
+    const rule = state.policyRules.find((r) => r.id === req.params.id);
+    if (!rule) {
+      res.status(404).json({ error: 'Rule not found' });
+      return;
+    }
+    if (stillWorks) {
+      const nextDate = new Date();
+      nextDate.setDate(nextDate.getDate() + 30);
+      rule.reviewAt = nextDate.toISOString().slice(0, 10);
+    } else {
+      rule.active = false;
+    }
+    saveState(state);
+    res.json({ rule });
+  });
+
+  // 11b. Digest Event Feedback ("这件该告诉我" / "撤销")
+  app.post('/api/digest/:id/mark-missed', (req, res) => {
+    const state = loadState();
+    const item = state.digestEvents.find((d) => d.id === req.params.id);
+    if (!item) {
+      res.status(404).json({ error: '未找到这条记录' });
+      return;
+    }
+    if (!item.markedWrong) {
+      item.markedWrong = true;
+      state.qualityMetrics.escapedDefectsCount += 1;
+      saveState(state);
+    }
+    res.json({ item, qualityMetrics: state.qualityMetrics });
+  });
+
+  app.post('/api/digest/:id/undo-missed', (req, res) => {
+    const state = loadState();
+    const item = state.digestEvents.find((d) => d.id === req.params.id);
+    if (!item) {
+      res.status(404).json({ error: '未找到这条记录' });
+      return;
+    }
+    if (item.markedWrong) {
+      item.markedWrong = false;
+      state.qualityMetrics.escapedDefectsCount = Math.max(
+        0,
+        state.qualityMetrics.escapedDefectsCount - 1
+      );
+      saveState(state);
+    }
+    res.json({ item, qualityMetrics: state.qualityMetrics });
+  });
+
   // 12. L3/L4 Outcome Check
   app.post('/api/outcomes/:decisionId', (req, res) => {
     const { verdict, note } = req.body as {
@@ -1240,7 +1498,7 @@ async function startServer() {
 
     record.outcomeCheck = {
       verdict,
-      note: (note || '').trim() || '已完成结果复盘',
+      note: (note || '').trim() || '已完成回看',
       checkedAt: new Date().toISOString(),
     };
     saveState(state);
@@ -1264,6 +1522,7 @@ async function startServer() {
 
   // Dev vs Prod frontend serving
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

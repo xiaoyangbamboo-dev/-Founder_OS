@@ -14,8 +14,21 @@ import {
   generateAgentHandshakePrompt,
   triageAgentMessage,
 } from './ingest';
+import {
+  computeDigestGroups,
+  computeWeeklySummary,
+  findRelatedDecisionsAndRules,
+  formatRelativeTime,
+  getDefaultSelectedOptionId,
+  getPendingReviewDecisions,
+  partitionQueueCases,
+  sortDecisionOptions,
+} from './formatters';
 import type {
   DecisionCase,
+  DecisionOption,
+  DecisionRecord,
+  FounderOsState,
   PolicyRule,
   Project,
   SubmissionPayload,
@@ -557,4 +570,228 @@ test('computeEisenhowerPosition maps importance and urgency scores accurately to
   const q4 = computeEisenhowerPosition(25, 30);
   assert.equal(q4.quadrant, 'defer');
 });
+
+test('formatRelativeTime uses relative text within 7 days and calendar date beyond 7 days', () => {
+  const now = new Date('2026-11-17T14:30:00');
+  assert.equal(formatRelativeTime('2026-11-17T14:29:40', now), '刚刚');
+  assert.equal(formatRelativeTime('2026-11-17T14:18:00', now), '12 分钟前');
+  assert.equal(formatRelativeTime('2026-11-16T18:05:00', now), '昨天 18:05');
+  assert.equal(formatRelativeTime('2026-11-14T10:00:00', now), '3 天前');
+  assert.equal(formatRelativeTime('2026-11-05T10:00:00', now), '11 月 5 日');
+});
+
+test('partitionQueueCases caps pending list at 3 and moves #4+ and snoozed items into later', () => {
+  const now = new Date('2026-11-17T10:00:00Z');
+  const makeCase = (id: string, score: number, snoozedUntil?: string): DecisionCase => ({
+    id,
+    threadId: `t-${id}`,
+    projectId: 'proj-1',
+    enforcementLayer: 'probabilistic_checker',
+    triggerType: 'semantic_conflict',
+    title: id,
+    question: '?',
+    whyNow: '',
+    costOfDelay: '',
+    estimatedMinutes: 1,
+    priorityScore: score,
+    facts: [],
+    assumptionsAndUnknowns: [],
+    devilAdvocateNote: '',
+    options: [],
+    candidateRuleText: '',
+    candidateRuleKind: 'semantic_habit',
+    status: 'Needs Human',
+    snoozedUntil,
+    createdAt: '2026-11-17T08:00:00Z',
+  });
+
+  const cases = [
+    makeCase('c1', 95),
+    makeCase('c2', 90),
+    makeCase('c3', 85),
+    makeCase('c4', 80),
+    makeCase('c-snoozed', 99, '2026-11-18T09:00:00Z'),
+  ];
+
+  const partitioned = partitionQueueCases(cases, 'all', now);
+  assert.deepEqual(
+    partitioned.pending.map((c) => c.id),
+    ['c1', 'c2', 'c3']
+  );
+  assert.deepEqual(
+    partitioned.later.map((c) => c.id),
+    ['c4', 'c-snoozed']
+  );
+  assert.equal(partitioned.totalPendingCount, 4);
+});
+
+test('sortDecisionOptions places recommended first, irreversible last, and never pre-selects irreversible', () => {
+  const opts: DecisionOption[] = [
+    {
+      id: 'opt-irrev',
+      label: '永久删除旧数据',
+      actionSummary: '删库',
+      benefit: '省空间',
+      costAndTradeoff: '不可恢复',
+      reversibility: 'Irreversible',
+      recommended: true,
+    },
+    {
+      id: 'opt-normal',
+      label: '先保留只做归档',
+      actionSummary: '归档',
+      benefit: '安全',
+      costAndTradeoff: '多占一点空间',
+      reversibility: 'Reversible',
+    },
+  ];
+
+  const sorted = sortDecisionOptions(opts);
+  assert.equal(sorted[0].id, 'opt-irrev'); // recommended sorts first, but:
+  assert.equal(getDefaultSelectedOptionId(opts), 'opt-normal'); // never pre-selects irreversible!
+
+  const onlyIrrev = [opts[0]];
+  assert.equal(getDefaultSelectedOptionId(onlyIrrev), '');
+});
+
+test('computeDigestGroups uses real 0 counts with no fake floor and excludes blocked events', () => {
+  const empty = computeDigestGroups([], [], 'all', []);
+  assert.equal(empty.totalHandledToday, 0);
+  assert.equal(empty.bouncedCount, 0);
+
+  const grouped = computeDigestGroups(
+    [
+      {
+        id: 'd1',
+        threadId: 't1',
+        projectId: 'proj-1',
+        threadTitle: 'T1',
+        eventType: 'silent_pass',
+        summary: 'ok',
+        timestamp: '2026-11-17T09:00:00Z',
+      },
+      {
+        id: 'd2',
+        threadId: 't2',
+        projectId: 'proj-1',
+        threadTitle: 'T2',
+        eventType: 'auto_bounced',
+        summary: 'bounced',
+        timestamp: '2026-11-17T09:10:00Z',
+      },
+      {
+        id: 'd3',
+        threadId: 't3',
+        projectId: 'proj-1',
+        threadTitle: 'T3',
+        eventType: 'blocked',
+        summary: 'blocked',
+        timestamp: '2026-11-17T09:20:00Z',
+      },
+    ],
+    [],
+    'all',
+    []
+  );
+  assert.equal(grouped.passed.length, 1);
+  assert.equal(grouped.bounced.length, 1);
+  assert.equal(grouped.totalHandledToday, 2);
+});
+
+test('computeWeeklySummary returns null for metrics lacking sufficient samples', () => {
+  const emptyState: FounderOsState = {
+    projects: [],
+    threads: [],
+    decisionCases: [],
+    agentMessages: [],
+    founderCommands: [],
+    policyRules: [],
+    decisionRecords: [],
+    autoAppliedActions: [],
+    digestEvents: [],
+    connections: [],
+    qualityMetrics: {
+      totalRuns: 0,
+      quietSuccessCount: 0,
+      escapedDefectsCount: 0,
+      falseBounceCount: 0,
+      totalBouncesAndEscalations: 0,
+      totalVerificationSpendUsd: 0,
+    },
+  };
+
+  const summary = computeWeeklySummary(emptyState, new Date('2026-11-17T10:00:00Z'));
+  assert.equal(summary.effectiveTotal, 0);
+  assert.equal(summary.avgResumeSeconds, null);
+  assert.equal(summary.filteredOutOfTen, null);
+  assert.equal(summary.falseDoneCaughtCount, null);
+  assert.equal(summary.precisionAskedCount, null);
+  assert.equal(summary.ruleAppliedCount, null);
+});
+
+test('getPendingReviewDecisions & findRelatedDecisionsAndRules match lookbacks and project context', () => {
+  const now = new Date('2026-11-17T12:00:00Z');
+  const records: DecisionRecord[] = [
+    {
+      id: 'dec-due',
+      caseId: 'c-old',
+      threadId: 't-old',
+      projectId: 'proj-1',
+      caseTitle: '私教项目要不要加社区打卡',
+      chosenOptionId: 'opt-1',
+      chosenOptionLabel: '先不做社区，先跑通训练记录',
+      userRationale: '核心流程优先',
+      reviewAfterAt: '2026-11-16T12:00:00Z',
+      decidedAt: '2026-11-10T12:00:00Z',
+    },
+    {
+      id: 'dec-future',
+      caseId: 'c-recent',
+      threadId: 't-recent',
+      projectId: 'proj-1',
+      caseTitle: '最近才定的事',
+      chosenOptionId: 'opt-2',
+      chosenOptionLabel: '继续',
+      userRationale: 'ok',
+      reviewAfterAt: '2026-11-20T12:00:00Z',
+      decidedAt: '2026-11-17T08:00:00Z',
+    },
+  ];
+
+  const due = getPendingReviewDecisions(records, 'proj-1', now);
+  assert.deepEqual(
+    due.map((r) => r.id),
+    ['dec-due']
+  );
+
+  const related = findRelatedDecisionsAndRules(
+    {
+      id: 'c-new',
+      threadId: 't-new',
+      projectId: 'proj-1',
+      enforcementLayer: 'probabilistic_checker',
+      triggerType: 'semantic_conflict',
+      title: '私教项目要不要顺便加会员排行榜',
+      question: '?',
+      whyNow: '',
+      costOfDelay: '',
+      estimatedMinutes: 1,
+      priorityScore: 80,
+      facts: [],
+      assumptionsAndUnknowns: [],
+      devilAdvocateNote: '',
+      options: [],
+      candidateRuleText: '',
+      candidateRuleKind: 'semantic_habit',
+      status: 'Needs Human',
+      createdAt: '2026-11-17T10:00:00Z',
+    },
+    records,
+    [hardBillingRule]
+  );
+
+  assert.equal(related.relatedDecisions[0].id, 'dec-due');
+  assert.equal(related.relatedRules[0].id, 'rule-billing');
+});
+
 

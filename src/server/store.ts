@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import type { FounderOsState } from '../types/founderOs';
-import { createInitialSeedState } from './seedData';
+import type { FounderOsState } from '../types/founderOs.ts';
+import { createInitialSeedState } from './seedData.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'founder-os-state.json');
@@ -18,9 +18,11 @@ export function loadState(): FounderOsState {
         Array.isArray(parsed.agentMessages) &&
         Array.isArray(parsed.founderCommands) &&
         Array.isArray(parsed.projects) &&
-        parsed.projects.some((p) => Boolean(p.stages)) &&
+        parsed.projects.some((p) => Boolean(p.stages) && Boolean(p.shortName)) &&
         Array.isArray(parsed.decisionCases) &&
-        parsed.decisionCases.every((c) => Boolean(c.decisionType))
+        parsed.decisionCases.every((c) => Boolean(c.decisionType)) &&
+        parsed.qualityMetrics &&
+        Array.isArray(parsed.qualityMetrics.decisionDurationsSeconds)
       ) {
         return parsed;
       }

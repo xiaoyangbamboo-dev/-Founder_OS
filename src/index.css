@@ -2,37 +2,57 @@
 
 @layer base {
   :root {
-    --font-display: "Inter", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
     --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
-    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "PingFang SC", "Microsoft YaHei", monospace;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
-    /* Medusa JF-4 Precision Aqua-White & Coral HUD Palette */
-    --bg: #f1fbfa;
-    --bg2: #e3f4f3;
-    --ink: #0e3a3d;
-    --mid: #5d8284;
-    --faint: #9dbcbc;
-    --line: #d3e8e7;
-    --coral: #ff5a3c;
-    --teal: #0f9d8a;
-    --aqua: #46c9bf;
-    --card: rgba(255, 255, 255, 0.91);
+    /* Founder OS v1 Design Palette */
+    --fos-canvas: #f5f8f7;
+    --fos-paper: #ffffff;
+    --fos-ink: #0e3a3d;
+    --fos-ink-secondary: #456669;
+    --fos-placeholder: #5f7c7e;
+    --fos-line: #c9d6d5;
+    --fos-control-border: #6f8c8b;
+
+    /* Semantic Tokens */
+    --fos-coral-mark: #ff5a3c;
+    --fos-coral-ink: #c93a1f;
+    --fos-coral-tint: #fdf1ee;
+
+    --fos-teal-ink: #0b7265;
+    --fos-teal-tint: #eaf6f3;
+
+    --fos-amber-ink: #8a5300;
+    --fos-amber-tint: #fff6e0;
   }
 
   html {
     font-family: var(--font-sans);
-    color: var(--ink);
-    background-color: var(--bg);
+    color: var(--fos-ink);
+    background-color: var(--fos-canvas);
     font-feature-settings: "kern" 1;
     -webkit-font-smoothing: antialiased;
+    font-size: 16px;
   }
 
-  h1, h2, h3, h4, .font-display {
-    font-family: var(--font-display);
+  body {
+    background-color: var(--fos-canvas);
+    color: var(--fos-ink);
   }
 
   code, pre, .font-mono {
     font-family: var(--font-mono);
+  }
+
+  /* Universal visible focus indicator (2px teal ring, offset 2px) */
+  :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--fos-teal-ink);
+    outline-offset: 2px;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--fos-placeholder);
   }
 }
 
@@ -40,118 +60,91 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Medusa JF-4 Radial Pale Aqua-White Canvas */
-.medusa-canvas {
-  background-color: var(--bg);
-  background-image: radial-gradient(
-    90% 80% at 50% 42%,
-    #fafefd 0%,
-    var(--bg) 55%,
-    var(--bg2) 100%
-  );
+/* Only the active Decision Sheet elevates off the flat canvas */
+.fos-sheet-shadow {
+  background-color: var(--fos-paper);
+  box-shadow: 0 1px 2px rgba(14, 58, 61, 0.06), 0 8px 24px rgba(14, 58, 61, 0.06);
 }
 
-/* Translucent HUD Card Surface (no backdrop-filter over active WebGL to keep software WebGL fast) */
-.medusa-card {
-  background: var(--card);
-  border: 1px solid rgba(255, 255, 255, 0.94);
-  box-shadow: 0 4px 20px rgba(40, 110, 110, 0.075);
+.fos-modal-shadow {
+  background-color: var(--fos-paper);
+  box-shadow: 0 16px 48px rgba(14, 58, 61, 0.16);
 }
 
-.medusa-hero-card {
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(211, 232, 231, 0.95);
-  box-shadow: 0 10px 30px rgba(14, 58, 61, 0.08);
+/* 160ms deliberate state transitions */
+@keyframes fosSheetEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-/* Signature Medusa JF-4 Card Header Accent Bar */
-.medusa-ct {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  color: var(--ink);
+@keyframes fosToastSlideUp {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
-.medusa-ct-label {
-  border-left: 3px solid var(--coral);
-  padding-left: 7px;
+@keyframes fosNewItemFlash {
+  0% {
+    background-color: var(--fos-teal-tint);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 
-/* Floating 3D Leader-Line Tag */
-.medusa-tag {
-  position: absolute;
-  left: 0;
-  top: 0;
-  pointer-events: none;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  color: var(--ink);
-  white-space: nowrap;
-  will-change: transform;
-  transition: opacity 0.25s;
+.fos-sheet-enter {
+  animation: fosSheetEnter 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.medusa-tag b {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  background: var(--coral);
-  margin-right: 6px;
+.fos-toast-enter {
+  animation: fosToastSlideUp 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.medusa-tag i {
-  display: block;
-  font-style: normal;
-  font-weight: 400;
-  font-size: 10px;
-  color: var(--mid);
-  margin-top: 2px;
-  padding-left: 13px;
+.fos-new-item-flash {
+  animation: fosNewItemFlash 1200ms ease-out forwards;
 }
 
-/* Crisp Medusa Control Button */
-.medusa-btn {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.86);
-  border: 1px solid var(--line);
-  padding: 5px 9px;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.medusa-btn:hover {
-  border-color: var(--coral);
-}
-
-.medusa-btn.on {
-  background: var(--coral);
-  border-color: var(--coral);
-  color: #ffffff;
-}
-
-.motion-settle {
+.fos-transition {
+  transition-property: color, background-color, border-color, opacity, transform;
+  transition-duration: 160ms;
   transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-  transition-duration: 180ms;
 }
 
-/* Subtle scrollbar for scrollable drawers inside HUD */
-.medusa-scroll::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+@media (prefers-reduced-motion: reduce) {
+  .fos-sheet-enter,
+  .fos-toast-enter,
+  .fos-new-item-flash {
+    animation-duration: 0ms !important;
+  }
+  .fos-transition,
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
 }
-.medusa-scroll::-webkit-scrollbar-thumb {
-  background: rgba(157, 188, 188, 0.55);
+
+/* Subtle clean scrollbar */
+.fos-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
 }
-.medusa-scroll::-webkit-scrollbar-track {
+.fos-scroll::-webkit-scrollbar-thumb {
+  background: rgba(111, 140, 139, 0.35);
+  border-radius: 3px;
+}
+.fos-scroll::-webkit-scrollbar-track {
   background: transparent;
 }

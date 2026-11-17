@@ -10,7 +10,7 @@ import type {
   RuleConflict,
   SubmissionPayload,
   WorkThread,
-} from '../types/founderOs';
+} from '../types/founderOs.ts';
 
 export interface DeterministicGatewayResult {
   violatedGuardrails: PolicyRule[];

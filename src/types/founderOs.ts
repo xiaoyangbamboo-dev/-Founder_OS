@@ -36,6 +36,7 @@ export interface ProjectStageNode {
 export interface Project {
   id: string;
   name: string;
+  shortName?: string;
   stage: string;
   domainIcon?: 'factory' | 'fitness' | 'comic' | 'support' | 'code';
   accentColor?: 'slate' | 'emerald' | 'amber' | 'blue';
@@ -156,6 +157,8 @@ export interface DecisionCase {
   candidateRuleKind: 'deterministic_guardrail' | 'semantic_habit';
   status: 'Needs Human' | 'Decided';
   markedAsFalsePositive?: boolean;
+  snoozedUntil?: string;
+  snoozeReasonLabel?: string;
   createdAt: string;
 }
 
@@ -209,6 +212,7 @@ export interface AutoAppliedAction {
   ruleTitle: string;
   threadId: string;
   threadTitle: string;
+  projectId?: string;
   actionTaken: string;
   reversible: boolean;
   undone: boolean;
@@ -227,6 +231,8 @@ export interface DecisionRecord {
   extraInstructionToAgent?: string;
   uploadedContextNote?: string;
   spawnedRuleId?: string;
+  decisionDurationSeconds?: number;
+  reviewAfterAt?: string;
   decidedAt: string;
   outcomeCheck?: {
     verdict: 'win' | 'miss' | 'neutral';
@@ -248,9 +254,11 @@ export interface FounderCommand {
 export interface DigestEvent {
   id: string;
   threadId: string;
+  projectId?: string;
   threadTitle: string;
   eventType: 'auto_bounced' | 'silent_pass' | 'blocked' | 'habit_auto_applied';
   summary: string;
+  rawContent?: string;
   markedWrong?: boolean;
   timestamp: string;
 }
@@ -262,6 +270,7 @@ export interface QualityMetrics {
   falseBounceCount: number; // False Positives marked by founder
   totalBouncesAndEscalations: number;
   totalVerificationSpendUsd: number;
+  decisionDurationsSeconds?: number[];
 }
 
 export interface AdapterConnection {
