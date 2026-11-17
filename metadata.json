@@ -1,0 +1,6 @@
+{
+  "name": "Founder OS",
+  "description": "Founder Cognitive & Control OS — Attention Firewall, 10s Resume Brief, Decision Case, and Judgment Memory for multi-thread builders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

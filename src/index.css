@@ -1,0 +1,157 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: "Inter", "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "PingFang SC", "Microsoft YaHei", monospace;
+
+    /* Medusa JF-4 Precision Aqua-White & Coral HUD Palette */
+    --bg: #f1fbfa;
+    --bg2: #e3f4f3;
+    --ink: #0e3a3d;
+    --mid: #5d8284;
+    --faint: #9dbcbc;
+    --line: #d3e8e7;
+    --coral: #ff5a3c;
+    --teal: #0f9d8a;
+    --aqua: #46c9bf;
+    --card: rgba(255, 255, 255, 0.91);
+  }
+
+  html {
+    font-family: var(--font-sans);
+    color: var(--ink);
+    background-color: var(--bg);
+    font-feature-settings: "kern" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Medusa JF-4 Radial Pale Aqua-White Canvas */
+.medusa-canvas {
+  background-color: var(--bg);
+  background-image: radial-gradient(
+    90% 80% at 50% 42%,
+    #fafefd 0%,
+    var(--bg) 55%,
+    var(--bg2) 100%
+  );
+}
+
+/* Translucent HUD Card Surface (no backdrop-filter over active WebGL to keep software WebGL fast) */
+.medusa-card {
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.94);
+  box-shadow: 0 4px 20px rgba(40, 110, 110, 0.075);
+}
+
+.medusa-hero-card {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(211, 232, 231, 0.95);
+  box-shadow: 0 10px 30px rgba(14, 58, 61, 0.08);
+}
+
+/* Signature Medusa JF-4 Card Header Accent Bar */
+.medusa-ct {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+}
+
+.medusa-ct-label {
+  border-left: 3px solid var(--coral);
+  padding-left: 7px;
+}
+
+/* Floating 3D Leader-Line Tag */
+.medusa-tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  white-space: nowrap;
+  will-change: transform;
+  transition: opacity 0.25s;
+}
+
+.medusa-tag b {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  background: var(--coral);
+  margin-right: 6px;
+}
+
+.medusa-tag i {
+  display: block;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 10px;
+  color: var(--mid);
+  margin-top: 2px;
+  padding-left: 13px;
+}
+
+/* Crisp Medusa Control Button */
+.medusa-btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--line);
+  padding: 5px 9px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.medusa-btn:hover {
+  border-color: var(--coral);
+}
+
+.medusa-btn.on {
+  background: var(--coral);
+  border-color: var(--coral);
+  color: #ffffff;
+}
+
+.motion-settle {
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  transition-duration: 180ms;
+}
+
+/* Subtle scrollbar for scrollable drawers inside HUD */
+.medusa-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.medusa-scroll::-webkit-scrollbar-thumb {
+  background: rgba(157, 188, 188, 0.55);
+}
+.medusa-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
